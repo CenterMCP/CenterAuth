@@ -1,0 +1,18 @@
+version: '3'
+tasks:
+  fmt:
+    cmds: [go fmt ./...]
+  test:
+    cmds: [go test -race ./...]
+  check:
+    cmds:
+      - go vet ./...
+      - go test -race ./...
+  build:
+    cmds:
+      - mkdir -p build
+      - go build -o build/centerauth ./cmd/server
+  run-dev:
+    cmds: [go run ./cmd/server]
+  docker-build:
+    cmds: [docker build -t centerauth .]
