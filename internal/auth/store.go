@@ -196,8 +196,8 @@ func validVerifier(value string) bool {
 }
 func baseURL(value string) (string, error) {
 	u, err := url.Parse(value)
-	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" && u.Path != "/" {
-		return "", fmt.Errorf("public URL must be an HTTPS origin (HTTP allowed on localhost)")
+	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.RawPath != "" || !cleanBasePath(u.Path) {
+		return "", fmt.Errorf("public URL must be an HTTPS base URL (HTTP allowed on localhost)")
 	}
 	if u.Scheme != "https" && !(u.Scheme == "http" && loopback(u.Hostname())) {
 		return "", fmt.Errorf("public URL must use HTTPS, except localhost")

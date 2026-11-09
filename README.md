@@ -29,13 +29,40 @@ These synthetic accounts are inserted on first startup. Passwords are stored as 
 
 The default database is `build/centerauth.db`. Open the demo in separate browser profiles or tabs and sign in as different users to compare profiles. Tokens are kept in the playground tab's session storage; LLM hosts manage their own token storage.
 
+## Kubernetes / CenterMCP gateway
+
+The gateway endpoint is the public base URL, for example `https://centermcp.com/mcp/r-82b12557d1cc7e788a0c5d47`. Configure the MCP's environment before starting it:
+
+```text
+HOST=0.0.0.0
+PORT=8000
+BASE_URL=https://centermcp.com/mcp/r-82b12557d1cc7e788a0c5d47
+ALLOWED_HOSTS=*.boodabest.svc.cluster.local
+```
+
+This is the supplied deployment URL; use its runtime slug `r-82b12557d1cc7e788a0c5d47`. `ALLOWED_HOSTS` accepts comma-separated hostnames or suffix patterns such as `*.boodabest.svc.cluster.local`, without ports or schemes. Use the actual namespace. A specific Service hostname is also supported, but revision Service names change on rebuild. Unknown hosts still receive 403. Allowlisting a host does not bypass OAuth: internal `/mcp` requests without tokens return 401 with public discovery metadata.
+
+For a prefixed public URL, the canonical MCP audience is `BASE_URL` itself. OAuth endpoints, demo links, login form actions, and cookie paths use that prefix. The gateway can strip the prefix before forwarding; direct prefixed requests also work. A root public URL retains the original `/mcp` endpoint convention.
+
+The CenterMCP API verifier must support OAuth-protected runtimes: it should validate a Bearer challenge and protected-resource metadata rather than require unauthenticated MCP initialization. Deploy the matching `centermcp-api` changes in this workspace for both API and gateway roles.
+
+The external ingress must route all three prefixes to the MCP gateway:
+
+```text
+/mcp/
+/.well-known/oauth-authorization-server/mcp/
+/.well-known/oauth-protected-resource/mcp/
+```
+
+The latter two are RFC well-known discovery URLs for path-based issuers/resources. They must reach the gateway rather than the frontend. The gateway routes them to the runtime's metadata endpoints. Host allowlisting alone does not complete deployment: the public URL, OAuth-aware verifier, and discovery routes must also be configured. No live Kubernetes changes are made by these source changes.
+
 ## Connect an LLM host
 
 1. Expose this server using a stable HTTPS origin reachable by the host.
-2. Start CenterAuth with that exact origin as `PUBLIC_URL`:
+2. Start CenterAuth with that public base URL as `BASE_URL`:
 
    ```sh
-   PUBLIC_URL=https://auth.example.com HOST=0.0.0.0 go run ./cmd/server
+   BASE_URL=https://auth.example.com HOST=0.0.0.0 go run ./cmd/server
    ```
 
 3. Add `https://auth.example.com/mcp` as an OAuth-protected MCP connection in your host. Its client must support OAuth Authorization Code + PKCE and dynamic client registration (DCR).
@@ -46,7 +73,7 @@ For ChatGPT, use its custom MCP connection setup with OAuth authentication. Host
 
 A host that requires preconfigured client credentials can register a client ahead of time and use the returned `client_id` / `client_secret`. CenterAuth supports `none`, `client_secret_basic`, and `client_secret_post` token endpoint authentication. It implements DCR, not Client ID Metadata Documents (CIMD). Callback URIs must match the registration exactly and use HTTPS, except for HTTP loopback callbacks.
 
-The server uses the configured public origin for issuer and audience values, not untrusted forwarded headers. Local reverse proxies may preserve that public Host header. Unknown Host values and cross-origin browser POSTs are rejected. Use the public URL for the browser flow when configured; `/health` also accepts loopback Host values for local probes.
+The server uses the configured public base URL for issuer and audience values, not untrusted forwarded headers. Local reverse proxies may preserve that public Host header. Unknown Host values and cross-origin browser POSTs are rejected. Use the public URL for the browser flow when configured; `/health` also accepts loopback Host values for local probes.
 
 ## OAuth / MCP request flow
 
@@ -86,7 +113,7 @@ LLM      -> tools/call: get_my_profile, arguments: {}
 | `GET /demo/callback` | Playground OAuth callback |
 | `GET /health` | SQLite connectivity and health |
 
-Only `profile:read` is supported. Supply `resource=<PUBLIC_URL>/mcp` in both authorization and token requests. Token and revocation requests use `application/x-www-form-urlencoded`; client registration uses JSON. This is OAuth, not OpenID Connect: there is no `openid` scope or ID token.
+Only `profile:read` is supported. Supply the advertised canonical MCP resource in both authorization and token requests: `<BASE_URL>/mcp` for an origin-only URL, or `<BASE_URL>` for a gateway-prefixed URL. Token and revocation requests use `application/x-www-form-urlencoded`; client registration uses JSON. This is OAuth, not OpenID Connect: there is no `openid` scope or ID token.
 
 Register a public client:
 
@@ -135,13 +162,16 @@ The tool also includes an equivalent text JSON fallback. It returns no passwords
 
 This is a teaching/demo implementation with public mock credentials and open DCR. Use synthetic data and a controlled environment. Production deployments should use an established identity provider, hardened ingress and rate limits, account lifecycle controls, and operational audit/cleanup policies. No third-party deployment or live-host registration has been performed by creating this project.
 
+`BASE_URL` is the primary environment variable. `PUBLIC_URL` remains a legacy fallback when `BASE_URL` is unset; `--public-url` overrides either environment variable.
+
 ## Configuration and build
 
 | Flag | Environment | Default |
 | --- | --- | --- |
 | `--address` | `HOST`, `PORT` | `127.0.0.1:3002` |
-| `--public-url` | `PUBLIC_URL` | `http://127.0.0.1:3002` |
+| `--public-url` | `BASE_URL` | `http://127.0.0.1:3002` |
 | `--database` | `DATABASE_PATH` | `build/centerauth.db` |
+| `--allowed-hosts` | `ALLOWED_HOSTS` | No extra hosts |
 | `--version` | — | Print semantic/build version |
 
 When changing the local port, also set the matching public URL.
@@ -154,7 +184,7 @@ go build -o build/centerauth ./cmd/server
 
 docker build -t centerauth .
 docker run --rm -p 3002:3002 -v centerauth-data:/data centerauth
-# For a remote HTTPS origin, also pass -e PUBLIC_URL=https://auth.example.com
+# For a remote HTTPS origin, also pass -e BASE_URL=https://auth.example.com
 ```
 
 `docker-build.sh` is adapted from CenterCDP. It accepts repository, tag, and Docker Hub username as positional arguments, reads a Docker Hub token from stdin, and builds **and pushes** using Buildx. Default platform is `linux/amd64`; configure `PLATFORMS` as needed. Local `docker build` / `task docker-build` do not publish.

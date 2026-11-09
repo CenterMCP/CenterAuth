@@ -23,12 +23,16 @@ var demoHTML string
 //go:embed demo.js
 var demoJS string
 
+var demoTemplate = template.Must(template.New("demo").Parse(demoHTML))
+
 var loginTemplate = template.Must(template.New("login").Parse(loginHTML))
 
 type userContextKey struct{}
 type Server struct {
 	Store          *Store
 	Base, Resource string
+	Origin, Prefix string
+	AllowedHosts   []string
 	MCP            *server.MCPServer
 	Transport      *server.StreamableHTTPServer
 }
@@ -38,12 +42,15 @@ type Profile struct {
 	Message string `json:"message"`
 }
 
-func New(store *Store, publicURL, version string) (*Server, error) {
-	base, err := baseURL(publicURL)
+func New(store *Store, publicURL, version string, allowedHosts ...string) (*Server, error) {
+	base, origin, prefix, hosts, err := parseHosting(publicURL, allowedHosts)
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{Store: store, Base: base, Resource: base + "/mcp"}
+	s := &Server{Store: store, Base: base, Resource: base + "/mcp", Origin: origin, Prefix: prefix, AllowedHosts: hosts}
+	if prefix != "" {
+		s.Resource = base
+	}
 	s.MCP = server.NewMCPServer("CenterAuth", version, server.WithToolCapabilities(false))
 	tool := mcp.NewTool("get_my_profile", mcp.WithDescription("Return the authenticated user's profile from SQLite. Identity comes exclusively from the validated OAuth bearer token on this request. Never ask for passwords or tokens in chat."), mcp.WithSchemaAdditionalProperties(false), mcp.WithOutputSchema[Profile](), mcp.WithReadOnlyHintAnnotation(true), mcp.WithDestructiveHintAnnotation(false), mcp.WithIdempotentHintAnnotation(true), mcp.WithOpenWorldHintAnnotation(false))
 	tool.Meta = mcp.NewMetaFromMap(map[string]any{"securitySchemes": []map[string]any{{"type": "oauth2", "scopes": []string{Scope}}}})
@@ -123,10 +130,10 @@ func (s *Server) Handler() http.Handler {
 		}
 		writeJSON(w, 200, map[string]string{"name": "CenterAuth", "status": "ok"})
 	})
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/demo", http.StatusSeeOther) })
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, s.Base+"/demo", http.StatusSeeOther) })
 	demo := func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(demoHTML))
+		_ = demoTemplate.Execute(w, struct{ Base, Resource, Script string }{s.Base, s.Resource, s.Base + "/demo.js"})
 	}
 	mux.HandleFunc("GET /demo", demo)
 	mux.HandleFunc("GET /demo/callback", demo)
@@ -135,10 +142,7 @@ func (s *Server) Handler() http.Handler {
 		_, _ = w.Write([]byte(demoJS))
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Validate Host here so a configured public HTTPS origin also works behind a local reverse proxy.
-		expected, _ := url.Parse(s.Base)
-		incoming, err := url.Parse("http://" + r.Host)
-		if err != nil || incoming.User != nil || (!strings.EqualFold(r.Host, expected.Host) && !loopback(incoming.Hostname())) {
+		if !s.allowsHost(r.Host) {
 			http.Error(w, "Host not allowed", http.StatusForbidden)
 			return
 		}
@@ -148,11 +152,27 @@ func (s *Server) Handler() http.Handler {
 		w.Header().Set("Referrer-Policy", "same-origin")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
-		if r.Method == http.MethodPost && r.Header.Get("Origin") != "" && r.Header.Get("Origin") != s.Base {
+		if r.Method == http.MethodPost && r.Header.Get("Origin") != "" && r.Header.Get("Origin") != s.Origin {
 			http.Error(w, "Origin not allowed", 403)
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 32<<10)
+		if s.Prefix != "" {
+			clone := r.Clone(r.Context())
+			route := r.URL.Path
+			for _, kind := range []string{"oauth-authorization-server", "oauth-protected-resource"} {
+				if route == "/.well-known/"+kind+s.Prefix {
+					route = "/.well-known/" + kind
+				}
+			}
+			if route == s.Prefix || route == s.Prefix+"/" {
+				route = "/mcp"
+			} else if strings.HasPrefix(route, s.Prefix+"/") {
+				route = strings.TrimPrefix(route, s.Prefix)
+			}
+			clone.URL.Path, clone.URL.RawPath = route, ""
+			r = clone
+		}
 		mux.ServeHTTP(w, r)
 	})
 }
@@ -164,5 +184,5 @@ func (s *Server) renderLogin(w http.ResponseWriter, flow string, request authReq
 	w.Header().Set("Content-Security-Policy", strings.Replace(policy, "form-action 'self';", "form-action 'self' "+callback.Scheme+"://"+callback.Host+";", 1))
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = loginTemplate.Execute(w, struct{ Flow, Client, Scope, Resource, Error string }{flow, request.ClientName, request.Scope, request.Resource, message})
+	_ = loginTemplate.Execute(w, struct{ Flow, Client, Scope, Resource, Error, Action string }{flow, request.ClientName, request.Scope, request.Resource, message, s.Base + "/oauth/authorize"})
 }

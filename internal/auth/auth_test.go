@@ -492,7 +492,7 @@ func TestRealHTTPMCPClient(t *testing.T) {
 	}
 }
 func TestOriginAndInputValidation(t *testing.T) {
-	for _, value := range []string{"http://example.com", "https://example.com/subpath", "https://user:pass@example.com", "https://example.com?x=1"} {
+	for _, value := range []string{"http://example.com", "https://user:pass@example.com", "https://example.com?x=1"} {
 		if _, err := baseURL(value); err == nil {
 			t.Fatalf("invalid origin %s", value)
 		}
@@ -525,5 +525,65 @@ func TestExternalCallbackPolicyAndHostValidation(t *testing.T) {
 	h.handler.ServeHTTP(w, r)
 	if w.Code != 403 {
 		t.Fatal("untrusted Host accepted")
+	}
+}
+
+func TestKubernetesHostAndGatewayPrefix(t *testing.T) {
+	h := setup(t)
+	service, err := New(h.store, "https://centermcp.com/mcp/centerauth", "test", "*.boodabest.svc.cluster.local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.server = service
+	h.handler = service.Handler()
+	for host, want := range map[string]int{"mcp-revision.boodabest.svc.cluster.local:8000": 401, "attacker.example": 403, "mcp-revision.boodabest.svc.cluster.local.attacker.example:8000": 403} {
+		r := httptest.NewRequest("POST", "http://"+host+"/mcp", strings.NewReader(`{}`))
+		w := httptest.NewRecorder()
+		h.handler.ServeHTTP(w, r)
+		if w.Code != want {
+			t.Fatalf("Host %s: %d want %d", host, w.Code, want)
+		}
+		if w.Code == 401 && !strings.Contains(w.Header().Get("WWW-Authenticate"), service.Base+"/.well-known/oauth-protected-resource/mcp") {
+			t.Fatal("incorrect public metadata URL")
+		}
+	}
+	w := h.request("GET", "/demo", "", "", nil)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `src="https://centermcp.com/mcp/centerauth/demo.js"`) {
+		t.Fatal("demo prefix missing")
+	}
+	c := h.register("none")
+	f := h.start(c)
+	w = h.exchange(f, h.code(f, "alice@example.com", "AliceDemo123!"))
+	if w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	tokens := decode(t, w)
+	w = h.profile(tokens["access_token"].(string))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "alice@example.com") {
+		t.Fatal("prefixed OAuth flow failed")
+	}
+	if service.Resource != "https://centermcp.com/mcp/centerauth" {
+		t.Fatal("audience must match gateway endpoint")
+	}
+	for _, kind := range []string{"oauth-protected-resource", "oauth-authorization-server"} {
+		r := httptest.NewRequest("GET", "https://centermcp.com/.well-known/"+kind+"/mcp/centerauth", nil)
+		w := httptest.NewRecorder()
+		h.handler.ServeHTTP(w, r)
+		if w.Code != 200 {
+			t.Fatalf("RFC discovery %s: %d", kind, w.Code)
+		}
+	}
+}
+func TestAllowedHostConfiguration(t *testing.T) {
+	h := setup(t)
+	for _, host := range []string{"*", "https://internal.example", "*.svc.cluster.local/evil", "*.svc.*"} {
+		if _, err := New(h.store, "https://auth.example.com", "test", host); err == nil {
+			t.Fatalf("invalid host allowlist accepted %s", host)
+		}
+	}
+	for _, base := range []string{"https://auth.example.com/foo/../bar", "https://auth.example.com/foo//bar"} {
+		if _, err := New(h.store, base, "test"); err == nil {
+			t.Fatalf("invalid path accepted: %s", base)
+		}
 	}
 }

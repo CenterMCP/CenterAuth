@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -25,25 +26,26 @@ func env(key, fallback string) string {
 }
 func main() {
 	address := flag.String("address", net.JoinHostPort(env("HOST", "127.0.0.1"), env("PORT", "3002")), "HTTP listen address")
-	publicURL := flag.String("public-url", env("PUBLIC_URL", "http://127.0.0.1:3002"), "Public HTTPS origin used as OAuth issuer (HTTP allowed on localhost)")
+	publicURL := flag.String("public-url", env("BASE_URL", env("PUBLIC_URL", "http://127.0.0.1:3002")), "Public HTTPS base URL used as OAuth issuer (HTTP allowed on localhost)")
 	database := flag.String("database", env("DATABASE_PATH", "build/centerauth.db"), "SQLite database file")
+	allowedHosts := flag.String("allowed-hosts", env("ALLOWED_HOSTS", ""), "Comma-separated extra hostnames allowed for internal service requests")
 	version := flag.Bool("version", false, "Print build version")
 	flag.Parse()
 	if *version {
 		fmt.Println(appversion.String())
 		return
 	}
-	if err := run(*address, *publicURL, *database); err != nil {
+	if err := run(*address, *publicURL, *database, strings.Split(*allowedHosts, ",")...); err != nil {
 		log.Fatal(err)
 	}
 }
-func run(address, publicURL, database string) error {
+func run(address, publicURL, database string, allowedHosts ...string) error {
 	store, err := auth.Open(database)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
-	service, err := auth.New(store, publicURL, appversion.String())
+	service, err := auth.New(store, publicURL, appversion.String(), allowedHosts...)
 	if err != nil {
 		return err
 	}
@@ -61,7 +63,7 @@ func run(address, publicURL, database string) error {
 			log.Printf("MCP shutdown: %v", err)
 		}
 	}()
-	log.Printf("CenterAuth %s · MCP %s/mcp · demo %s/demo", appversion.String(), service.Base, service.Base)
+	log.Printf("CenterAuth %s · MCP %s · demo %s", appversion.String(), service.Resource, service.Base+"/demo")
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

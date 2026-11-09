@@ -8,7 +8,7 @@ import (
 
 // FeatureVersion is the user-facing semantic version. Bump the minor version
 // for each feature change and the patch version for fixes.
-const FeatureVersion = "0.1.0"
+const FeatureVersion = "0.2.0"
 
 type Info struct {
 	Name           string `json:"name"`

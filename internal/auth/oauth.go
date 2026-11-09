@@ -162,7 +162,7 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, 500, "server_error", "Could not start sign-in")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: "centerauth_" + flow, Value: csrf, Path: "/oauth/authorize", HttpOnly: true, Secure: strings.HasPrefix(s.Base, "https://"), SameSite: http.SameSiteLaxMode, MaxAge: 600})
+	http.SetCookie(w, &http.Cookie{Name: "centerauth_" + flow, Value: csrf, Path: s.Prefix + "/oauth/authorize", HttpOnly: true, Secure: strings.HasPrefix(s.Base, "https://"), SameSite: http.SameSiteLaxMode, MaxAge: 600})
 	s.renderLogin(w, flow, request, "")
 }
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -235,7 +235,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	s.redirect(w, r, request, map[string]string{"code": code, "iss": s.Base})
 }
 func (s *Server) clearFlow(w http.ResponseWriter, flow string) {
-	http.SetCookie(w, &http.Cookie{Name: "centerauth_" + flow, Path: "/oauth/authorize", MaxAge: -1, HttpOnly: true, Secure: strings.HasPrefix(s.Base, "https://"), SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, &http.Cookie{Name: "centerauth_" + flow, Path: s.Prefix + "/oauth/authorize", MaxAge: -1, HttpOnly: true, Secure: strings.HasPrefix(s.Base, "https://"), SameSite: http.SameSiteLaxMode})
 }
 func (s *Server) redirect(w http.ResponseWriter, r *http.Request, request authRequest, extra map[string]string) {
 	uri, _ := url.Parse(request.Redirect)
